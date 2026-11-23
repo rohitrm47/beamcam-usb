@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:ui';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -505,14 +506,14 @@ class _SenderPageState extends State<SenderPage> {
                     children: [
                       Icon(
                         Icons.videocam,
-                        color: Colors.white.withValues(alpha: 0.12),
+                        color: Colors.white.withOpacity(0.12),
                         size: 48,
                       ),
                       const SizedBox(height: 12),
                       Text(
                         'Stealth Mode · Camera Streaming over USB',
                         style: TextStyle(
-                          color: Colors.white.withValues(alpha: 0.20),
+                          color: Colors.white.withOpacity(0.20),
                           fontSize: 14,
                           fontWeight: FontWeight.w500,
                         ),
@@ -521,7 +522,7 @@ class _SenderPageState extends State<SenderPage> {
                       Text(
                         'Double tap anywhere to wake up screen',
                         style: TextStyle(
-                          color: Colors.white.withValues(alpha: 0.35),
+                          color: Colors.white.withOpacity(0.35),
                           fontSize: 12,
                         ),
                       ),
@@ -533,7 +534,7 @@ class _SenderPageState extends State<SenderPage> {
                   right: 24,
                   child: IconButton.filledTonal(
                     style: IconButton.styleFrom(
-                      backgroundColor: Colors.white.withValues(alpha: 0.15),
+                      backgroundColor: Colors.white.withOpacity(0.15),
                       foregroundColor: Colors.white70,
                     ),
                     icon: const Icon(Icons.wb_sunny_outlined),

@@ -133,7 +133,7 @@ class _ConnectViewState extends State<ConnectView> {
                   Text(
                     'Zero Wi-Fi, zero internet. Video & audio stream directly through the USB cable into your Mac with minimal latency.',
                     style: theme.textTheme.bodyMedium?.copyWith(
-                      color: scheme.onPrimaryContainer.withValues(alpha: 0.9),
+                      color: scheme.onPrimaryContainer.withOpacity(0.9),
                     ),
                   ),
                   const SizedBox(height: 20),
@@ -231,7 +231,7 @@ class _StepTile extends StatelessWidget {
       children: [
         CircleAvatar(
           radius: 14,
-          backgroundColor: theme.colorScheme.primary.withValues(alpha: 0.15),
+          backgroundColor: theme.colorScheme.primary.withOpacity(0.15),
           child: Text(
             number,
             style: TextStyle(

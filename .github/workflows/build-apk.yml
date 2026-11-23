@@ -31,7 +31,7 @@ jobs:
         run: flutter pub get
 
       - name: Build APK (Release)
-        run: flutter build apk --release
+        run: flutter build apk --release --no-tree-shake-icons
 
       - name: Rename APK
         run: |
@@ -43,4 +43,3 @@ jobs:
         with:
           name: BeamCam-USB-Privacy-APK
           path: output/BeamCam-USB-Privacy.apk
-
