@@ -1,0 +1,290 @@
+name: Release
+
+# Fires when a GitHub release is published. The release tag is the source of
+# truth for the version: it is written back into pubspec.yaml, and both apps
+# read their version from the built bundle via package_info_plus.
+#
+# Deliberately no `pull_request` trigger. Nothing here should run on someone
+# else's branch: this job holds signing secrets and pushes to main. Keep it
+# that way — a CI workflow for PRs, if one is ever added, belongs in its own
+# file with no secrets and no write permissions.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build, without the leading v (e.g. 1.2.0)'
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  FLUTTER_VERSION: '3.44.9'
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.pick.outputs.version }}
+    steps:
+      - id: pick
+        # Tag names carry a leading v by convention; pubspec must not.
+        run: |
+          RAW="${{ github.event.inputs.version || github.event.release.tag_name }}"
+          echo "version=${RAW#v}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Build number is the run number: monotonic, which is all Android and
+      # macOS require of it.
+      - name: Write version into pubspec.yaml
+        run: |
+          NEW="${{ steps.pick.outputs.version }}+${{ github.run_number }}"
+          sed -i "s/^version: .*/version: $NEW/" pubspec.yaml
+          grep '^version:' pubspec.yaml
+
+      - name: Commit the bump
+        run: |
+          git config user.name  'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git add pubspec.yaml
+          git diff --staged --quiet || git commit -m "Release ${{ steps.pick.outputs.version }}"
+          git push origin main
+
+  android:
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+
+      - run: flutter pub get
+      - run: flutter analyze
+      - run: flutter test
+      - run: flutter build apk --release
+
+      - name: Name the artifact after the version
+        run: |
+          mv build/app/outputs/flutter-apk/app-release.apk \
+             beamcam-${{ needs.version.outputs.version }}.apk
+
+      # A workflow_dispatch run has no release to attach to, so a dry run keeps
+      # its output as a downloadable artifact instead of failing at the last step.
+      - name: Attach to the release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: beamcam-${{ needs.version.outputs.version }}.apk
+
+      - name: Upload as a build artifact
+        if: github.event_name != 'release'
+        uses: actions/upload-artifact@v4
+        with:
+          name: beamcam-apk
+          path: beamcam-${{ needs.version.outputs.version }}.apk
+
+  macos:
+    needs: version
+    runs-on: macos-latest
+    # secrets cannot be read inside a step's `if`, so presence is hoisted into
+    # env once here. Absent secrets => every signing step no-ops and the job
+    # still produces an (unsigned, non-functional) build rather than failing.
+    env:
+      SIGNED: ${{ secrets.MACOS_CERT_P12 != '' && secrets.MACOS_PROFILE_APP != '' && secrets.NOTARY_KEY_P8 != '' }}
+      APP: build/macos/Build/Products/Release/beamcam.app
+      ZIP: beamcam-${{ needs.version.outputs.version }}-macos.zip
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      # This project builds through Swift Package Manager, not CocoaPods —
+      # there is no Podfile. flutter_webrtc's Objective-C headers only resolve
+      # FlutterMacOS under a recent Xcode; an older one fails with "no type or
+      # protocol named 'FlutterBinaryMessenger'". Take the newest on the image
+      # rather than whatever xcode-select happens to point at.
+      - name: Select the newest Xcode
+        run: |
+          NEWEST=$(ls -d /Applications/Xcode*.app | sort -V | tail -1)
+          sudo xcode-select -s "$NEWEST"
+          xcodebuild -version
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+
+      - name: Import the Developer ID certificate
+        if: env.SIGNED == 'true'
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/build.keychain"
+          security create-keychain -p "" "$KEYCHAIN"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN"
+          security unlock-keychain -p "" "$KEYCHAIN"
+          echo "${{ secrets.MACOS_CERT_P12 }}" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" \
+            -P "${{ secrets.MACOS_CERT_PASSWORD }}" -T /usr/bin/codesign
+          # Without this, codesign blocks on an interactive keychain prompt.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "" "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
+          rm "$RUNNER_TEMP/cert.p12"
+
+      # Only the container app needs a profile: system-extension.install is a
+      # restricted entitlement and nothing but a profile can grant it. The
+      # extension's own entitlements (sandbox, app group, camera) are not
+      # restricted, so it signs without one — as the local build does.
+      - name: Install provisioning profile
+        if: env.SIGNED == 'true'
+        run: |
+          mkdir -p ~/Library/Provisioning\ Profiles
+          echo "${{ secrets.MACOS_PROFILE_APP }}" | base64 --decode \
+            > ~/Library/Provisioning\ Profiles/app.provisionprofile
+
+      - run: flutter pub get
+
+      # The project signs with "Apple Development" under automatic signing,
+      # which needs an Xcode account and a Mac App Development profile — a
+      # runner has neither, and Developer ID is a different profile type
+      # anyway. Build ad-hoc instead; the Sign step below replaces those
+      # signatures with the real Developer ID ones.
+      - name: Build ad-hoc, sign afterwards
+        if: env.SIGNED == 'true'
+        run: |
+          sed -i '' \
+            -e 's/CODE_SIGN_STYLE = Automatic;/CODE_SIGN_STYLE = Manual;/g' \
+            -e 's/CODE_SIGN_IDENTITY = "Apple Development";/CODE_SIGN_IDENTITY = "-";/g' \
+            macos/Runner.xcodeproj/project.pbxproj
+
+      - run: flutter build macos --release
+
+      # Inside-out: nested code must be sealed before the bundle that contains
+      # it, or the outer signature is invalidated the moment the inner one changes.
+      - name: Sign
+        if: env.SIGNED == 'true'
+        run: |
+          ID="${{ secrets.MACOS_SIGN_IDENTITY }}"
+
+          # Never hand codesign the raw .entitlements source: it holds Xcode
+          # build variables such as $(TeamIdentifierPrefix), and codesign does
+          # not expand them. It signs the literal string, so the bundle claims
+          # an app group that cannot exist and the extension fails to activate
+          # with "extension category returned error". Reuse what Xcode already
+          # substituted during the build, minus get-task-allow, which
+          # notarization rejects.
+          # PlistBuddy, not plutil: plutil -remove reads dots as key-path
+          # separators, so it never matches a key literally named
+          # com.apple.security.get-task-allow and notarization then rejects the
+          # build. PlistBuddy takes the key as written.
+          ents() {
+            codesign -d --entitlements - --xml "$1" 2>/dev/null > "$2"
+            plutil -convert xml1 "$2"
+            /usr/libexec/PlistBuddy -c \
+              "Delete :com.apple.security.get-task-allow" "$2" 2>/dev/null || true
+            if grep -q get-task-allow "$2"; then
+              echo "::error::get-task-allow survived in $2"; exit 1
+            fi
+          }
+
+          EXT="$APP/Contents/Library/SystemExtensions"
+          for f in "$EXT"/*.systemextension; do
+            ents "$f" "$RUNNER_TEMP/ext.plist"
+            codesign --force --timestamp --options runtime \
+              --entitlements "$RUNNER_TEMP/ext.plist" --sign "$ID" "$f"
+          done
+
+          cp ~/Library/Provisioning\ Profiles/app.provisionprofile \
+             "$APP/Contents/embedded.provisionprofile"
+          find "$APP/Contents/Frameworks" -name '*.framework' -o -name '*.dylib' \
+            | while read -r f; do
+                codesign --force --timestamp --options runtime --sign "$ID" "$f"
+              done
+
+          # The ad-hoc build step (CODE_SIGN_IDENTITY = "-") leaves this driver
+          # bundle ad-hoc signed same as everything else, but unlike
+          # SystemExtensions/Frameworks above it lives in Contents/Resources,
+          # which nothing else here re-signs — an ad-hoc nested binary fails
+          # notarization ("Invalid") even though the outer app looks fine.
+          DRIVER="$APP/Contents/Resources/AudioDriver.driver"
+          [ -e "$DRIVER" ] && codesign --force --timestamp --options runtime --sign "$ID" "$DRIVER"
+
+          ents "$APP" "$RUNNER_TEMP/app.plist"
+          codesign --force --timestamp --options runtime \
+            --entitlements "$RUNNER_TEMP/app.plist" --sign "$ID" "$APP"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+
+      # 1.0.0 shipped unexpanded build variables and 1.0.1 shipped
+      # get-task-allow. Both were invisible until something else rejected them
+      # — one at activation on another machine, one at notarization, minutes
+      # into the job. Assert both here, on the signed bundles, immediately.
+      - name: Assert the signed entitlements are shippable
+        if: env.SIGNED == 'true'
+        run: |
+          fail=0
+          for b in "$APP" "$APP"/Contents/Library/SystemExtensions/*.systemextension; do
+            e=$(codesign -d --entitlements - --xml "$b" 2>/dev/null)
+            if grep -q '\$(' <<<"$e"; then
+              echo "::error::Unexpanded entitlement variable in $b"; fail=1
+            fi
+            if grep -q 'get-task-allow' <<<"$e"; then
+              echo "::error::get-task-allow present in $b — notarization will reject"; fail=1
+            fi
+          done
+          [ "$fail" = 0 ] || exit 1
+          echo "entitlements substituted, no get-task-allow"
+
+      # Zip rather than upload the .app directly: a release asset is a single
+      # file, and ditto preserves the bundle's symlinks and resource forks.
+      - name: Zip the app
+        run: ditto -c -k --sequesterRsrc --keepParent "$APP" "$ZIP"
+
+      - name: Notarize and staple
+        if: env.SIGNED == 'true'
+        run: |
+          echo "${{ secrets.NOTARY_KEY_P8 }}" | base64 --decode > "$RUNNER_TEMP/key.p8"
+          xcrun notarytool submit "$ZIP" \
+            --key "$RUNNER_TEMP/key.p8" \
+            --key-id "${{ secrets.NOTARY_KEY_ID }}" \
+            --issuer "${{ secrets.NOTARY_ISSUER_ID }}" \
+            --wait
+          # The ticket staples onto the .app, so the zip is rebuilt around it —
+          # otherwise first launch needs the network to fetch the ticket.
+          xcrun stapler staple "$APP"
+          rm -f "$ZIP"
+          ditto -c -k --sequesterRsrc --keepParent "$APP" "$ZIP"
+          rm "$RUNNER_TEMP/key.p8"
+
+      - name: Warn when unsigned
+        if: env.SIGNED != 'true'
+        run: |
+          echo "::warning::Built WITHOUT signing — the system extension will not \
+          activate. Set MACOS_CERT_P12, MACOS_CERT_PASSWORD, MACOS_SIGN_IDENTITY, \
+          MACOS_PROFILE_APP, NOTARY_KEY_P8, NOTARY_KEY_ID and \
+          NOTARY_ISSUER_ID to produce a working build."
+
+      - name: Attach to the release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.ZIP }}
+
+      - name: Upload as a build artifact
+        if: github.event_name != 'release'
+        uses: actions/upload-artifact@v4
+        with:
+          name: beamcam-macos
+          path: ${{ env.ZIP }}

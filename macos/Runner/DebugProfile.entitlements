@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- App Sandbox dropped — see Release.entitlements for the full rationale
+	     (the virtual-mic HAL driver needs a fixed-path shared-memory file
+	     outside any sandbox container). cs.allow-jit is unrelated (hardened
+	     runtime, needed for the Dart VM in debug/profile) and stays. -->
+	<key>com.apple.security.cs.allow-jit</key>
+	<true/>
+	<key>com.apple.developer.system-extension.install</key>
+	<true/>
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.$(TeamIdentifierPrefix)com.abdulsaheel.beamcam</string>
+	</array>
+</dict>
+</plist>

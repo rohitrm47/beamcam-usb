@@ -1,0 +1,28 @@
+name: beamcam
+description: "Ultra-private Phone-as-Webcam over USB."
+publish_to: 'none'
+version: 1.2.0+12
+
+environment:
+  sdk: ^3.12.2
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  flutter_webrtc: ^1.6.0
+  shared_preferences: ^2.5.5
+  package_info_plus: ^10.2.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/logo-light.png
+    - assets/logo-dark.png

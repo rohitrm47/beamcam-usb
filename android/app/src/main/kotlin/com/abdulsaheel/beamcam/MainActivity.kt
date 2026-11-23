@@ -1,0 +1,55 @@
+package com.abdulsaheel.beamcam
+
+import android.view.WindowManager
+import io.flutter.embedding.android.FlutterActivity
+import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.plugin.common.MethodChannel
+
+class MainActivity : FlutterActivity() {
+
+    private companion object {
+        const val CHANNEL = "beamcam/service"
+    }
+
+    override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
+        super.configureFlutterEngine(flutterEngine)
+
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "startBackground" -> {
+                        val video = call.argument<Boolean>("video") ?: true
+                        val audio = call.argument<Boolean>("audio") ?: false
+                        BeamCamService.start(this, video = video, audio = audio)
+                        result.success(true)
+                    }
+                    "stopBackground" -> {
+                        BeamCamService.stop(this)
+                        result.success(true)
+                    }
+                    "pinRotation" -> {
+                        val trackId = call.argument<String>("trackId")
+                        if (trackId == null) {
+                            result.error("no_track", "trackId is required", null)
+                        } else {
+                            result.success(RotationPinner.pin(trackId))
+                        }
+                    }
+                    "unpinRotation" -> {
+                        call.argument<String>("trackId")?.let { RotationPinner.unpin(it) }
+                        result.success(true)
+                    }
+                    "setKeepScreenOn" -> {
+                        val enabled = call.argument<Boolean>("enabled") ?: false
+                        if (enabled) {
+                            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                        } else {
+                            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                        }
+                        result.success(true)
+                    }
+                    else -> result.notImplemented()
+                }
+            }
+    }
+}
